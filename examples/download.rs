@@ -1,13 +1,5 @@
+use rbittorrent::TorrentClientBuilder;
 use std::path::PathBuf;
-
-use builder::TorrentClientBuilder;
-
-mod bencode;
-mod builder;
-mod message;
-mod peer;
-mod task;
-mod torrent;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
