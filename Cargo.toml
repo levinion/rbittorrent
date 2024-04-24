@@ -1,0 +1,17 @@
+[package]
+name = "rbittorrent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.82"
+serde = { version = "1.0.198", features = ["derive"] }
+serde_bencode = "0.2.4"
+bytes = { version = "1.6.0", features = ["serde"] }
+reqwest = "0.12.4"
+sha1 = "0.10.6"
+tokio = { version = "1.37.0", features = ["full"] }
+url = "2.5.0"
+crossbeam = "0.8.4"
+log = "0.4.21"
+env_logger = "0.11.3"
