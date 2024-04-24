@@ -1,8 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{fs::remove_dir_all, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use crossbeam::{queue::ArrayQueue, sync::WaitGroup};
-use log::error;
+use indicatif::ProgressBar;
+use log::info;
 
 use crate::{message::Bitfield, peer::Peers, task::Task};
 
@@ -18,6 +19,7 @@ pub struct TorrentClient {
     pub port: u16,
     pub task_queue: Arc<ArrayQueue<Task>>,
     pub bitfield: Bitfield,
+    pub pb: ProgressBar,
 }
 
 impl TorrentClient {
@@ -53,6 +55,7 @@ impl TorrentClient {
             &res.bytes().await?,
             self.task_queue.clone(),
             self.name.clone(),
+            self.pb.clone(),
         )
     }
 
@@ -77,13 +80,14 @@ impl TorrentClient {
                 let peer_id = self.id;
                 async move {
                     if let Err(err) = peer.try_download(&info_hash, &peer_id).await {
-                        error!("{}", err);
+                        info!("{}", err);
                     }
                     drop(wg)
                 }
             });
         }
         wg.wait();
+        self.pb.finish();
         self.concat_cache()?;
         Ok(())
     }
@@ -108,6 +112,7 @@ impl TorrentClient {
                 std::io::copy(&mut cache, &mut file)?;
                 Ok::<(), anyhow::Error>(())
             })?;
+        remove_dir_all(&*self.name)?;
         Ok(())
     }
 }

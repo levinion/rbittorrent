@@ -2,6 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use crossbeam::queue::ArrayQueue;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{bencode::BencodeTorrent, message::Bitfield, torrent::TorrentClient};
 
@@ -66,6 +67,12 @@ impl TorrentClientBuilder {
     pub fn build(self) -> TorrentClient {
         let piece_num = self.piece_num();
         let task_queue = ArrayQueue::new(piece_num as usize);
+        let pb = {
+            let pb = ProgressBar::new(self.length.unwrap() as _);
+            pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+        .unwrap());
+            pb
+        };
         TorrentClient {
             announce: self.announce.unwrap(),
             info_hash: self.info_hash.unwrap(),
@@ -77,6 +84,7 @@ impl TorrentClientBuilder {
             port: self.port.unwrap_or(6881),
             task_queue: Arc::new(task_queue),
             bitfield: Bitfield::new(piece_num),
+            pb,
         }
     }
 }

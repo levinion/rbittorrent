@@ -10,7 +10,8 @@ use std::{
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use crossbeam::queue::ArrayQueue;
-use log::{error, info};
+use indicatif::ProgressBar;
+use log::info;
 use serde::{Deserialize, Serialize};
 use sha1::Digest;
 use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
@@ -38,6 +39,7 @@ pub struct Peer {
     pub current_task: Option<Task>,
     pub offset: u32,
     pub name: Arc<String>,
+    pub pb: ProgressBar,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,7 +52,12 @@ pub struct TrackerReport {
 pub struct Peers(Vec<Peer>);
 
 impl Peers {
-    pub fn new(buf: &[u8], task_queue: Arc<ArrayQueue<Task>>, name: Arc<String>) -> Result<Self> {
+    pub fn new(
+        buf: &[u8],
+        task_queue: Arc<ArrayQueue<Task>>,
+        name: Arc<String>,
+        pb: ProgressBar,
+    ) -> Result<Self> {
         let tracker_report: TrackerReport = serde_bencode::from_bytes(buf)?;
         let buf = tracker_report.peers;
 
@@ -71,6 +78,7 @@ impl Peers {
                     current_task: None,
                     offset: 0,
                     name: name.clone(),
+                    pb: pb.clone(),
                 }
             })
             .collect();
@@ -122,7 +130,7 @@ impl Peer {
             // task exists and done
             Some(true) => {
                 if let Err(err) = self.check_sum() {
-                    error!("{}", err);
+                    info!("{}", err);
                 }
                 self.fetch_task()
             }
@@ -178,7 +186,6 @@ impl Peer {
     /// send request to peer
     async fn request_piece(&mut self) -> Result<()> {
         info!("send request to peer: {}", self.ip);
-        self.send_message(Message::Interested).await?;
         self.send_message(Message::Request(Request::new(
             self.current_task.as_ref().unwrap().index,
             self.offset * Self::BLOCK_SIZE,
@@ -211,6 +218,7 @@ impl Peer {
                         self.put_task_back();
                         self.try_fetch_task();
                     } else {
+                        self.send_message(Message::Interested).await?;
                         break;
                     }
                 }
@@ -220,6 +228,7 @@ impl Peer {
                     "download #{} block of #{} piece from peer: {}",
                     self.offset, piece.index, self.ip
                 );
+                self.pb.inc(piece.piece.len() as _);
                 self.save_piece(&piece)?;
                 self.offset += 1;
                 if let PeerEvent::Exit = self.try_fetch_task() {
@@ -260,7 +269,7 @@ impl Peer {
                     }
                 },
                 Err(err) => {
-                    error!("peer {} disconnect cause of fatal error: {}", self.ip, err);
+                    info!("peer {} disconnect cause of fatal error: {}", self.ip, err);
                     break;
                 }
             }
