@@ -37,9 +37,9 @@ pub struct Peer {
     pub bitfield: Option<Bitfield>,
     pub task_queue: Arc<ArrayQueue<Task>>,
     pub current_task: Option<Task>,
-    pub offset: u32,
     pub name: Arc<String>,
     pub pb: ProgressBar,
+    pub received_pieces: Vec<Piece>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,9 +76,9 @@ impl Peers {
                     bitfield: None,
                     task_queue: task_queue.clone(),
                     current_task: None,
-                    offset: 0,
                     name: name.clone(),
                     pb: pb.clone(),
+                    received_pieces: vec![],
                 }
             })
             .collect();
@@ -118,37 +118,48 @@ impl Peer {
 
     fn is_current_task_done(&self) -> Option<bool> {
         if self.current_task.is_some() {
-            Some(self.offset * Self::BLOCK_SIZE >= self.current_task.as_ref().unwrap().piece_length)
+            Some(
+                self.received_pieces.len() as u32 * Self::BLOCK_SIZE
+                    >= self.current_task.as_ref().unwrap().piece_length,
+            )
         } else {
             None
         }
     }
 
     /// if current task is done or none, fetch task from queue
-    fn try_fetch_task(&mut self) -> PeerEvent {
+    async fn try_fetch_task(&mut self) -> Result<PeerEvent> {
         match self.is_current_task_done() {
             // task exists and done
             Some(true) => {
+                self.save_pieces()?;
                 if let Err(err) = self.check_sum() {
                     info!("{}", err);
+                    self.put_task_back();
+                } else {
+                    info!(
+                        "piece #{} downloaded successfully",
+                        self.current_task.as_ref().unwrap().index
+                    );
                 }
-                self.fetch_task()
+                self.fetch_task()?;
+                self.request_piece().await?;
+                Ok(PeerEvent::Continue)
             }
             // task exists and not done
-            Some(false) => PeerEvent::Continue,
+            Some(false) => Ok(PeerEvent::Continue),
             // task not exists
             None => self.fetch_task(),
         }
     }
 
-    fn fetch_task(&mut self) -> PeerEvent {
+    fn fetch_task(&mut self) -> Result<PeerEvent> {
         let task = match self.task_queue.pop() {
             Some(task) => task,
-            None => return PeerEvent::Exit,
+            None => return Ok(PeerEvent::Exit),
         };
         self.current_task = Some(task);
-        self.offset = 0;
-        PeerEvent::Continue
+        Ok(PeerEvent::Continue)
     }
 
     fn put_task_back(&mut self) {
@@ -179,19 +190,26 @@ impl Peer {
 
     /// read and process message
     async fn read_message(&mut self) -> Result<PeerEvent> {
-        let msg = Message::from_stream(self.stream.as_mut().unwrap()).await?;
-        self.process_msg(msg).await
+        if let Ok(msg) = Message::from_stream(self.stream.as_mut().unwrap()).await {
+            self.process_msg(msg).await
+        } else {
+            Ok(PeerEvent::Continue)
+        }
     }
 
     /// send request to peer
     async fn request_piece(&mut self) -> Result<()> {
         info!("send request to peer: {}", self.ip);
-        self.send_message(Message::Request(Request::new(
-            self.current_task.as_ref().unwrap().index,
-            self.offset * Self::BLOCK_SIZE,
-            Self::BLOCK_SIZE,
-        )))
-        .await?;
+        let mut offset = 0;
+        while offset < self.current_task.as_ref().unwrap().piece_length / Self::BLOCK_SIZE {
+            self.send_message(Message::Request(Request::new(
+                self.current_task.as_ref().unwrap().index,
+                offset * Self::BLOCK_SIZE,
+                Self::BLOCK_SIZE,
+            )))
+            .await?;
+            offset += 1;
+        }
         Ok(())
     }
 
@@ -209,14 +227,14 @@ impl Peer {
                     self.ip
                 );
                 self.bitfield = Some(bitfield);
-                if let PeerEvent::Exit = self.try_fetch_task() {
+                if let Ok(PeerEvent::Exit) = self.try_fetch_task().await {
                     return Ok(PeerEvent::Exit);
                 }
                 loop {
                     let index = self.current_task.as_ref().unwrap().index;
                     if !self.has_piece(index) {
                         self.put_task_back();
-                        self.try_fetch_task();
+                        self.fetch_task()?;
                     } else {
                         self.send_message(Message::Interested).await?;
                         break;
@@ -226,15 +244,15 @@ impl Peer {
             Message::Piece(piece) => {
                 info!(
                     "download #{} block of #{} piece from peer: {}",
-                    self.offset, piece.index, self.ip
+                    piece.begin / Self::BLOCK_SIZE,
+                    piece.index,
+                    self.ip
                 );
                 self.pb.inc(piece.piece.len() as _);
-                self.save_piece(&piece)?;
-                self.offset += 1;
-                if let PeerEvent::Exit = self.try_fetch_task() {
+                self.received_pieces.push(piece);
+                if let Ok(PeerEvent::Exit) = self.try_fetch_task().await {
                     return Ok(PeerEvent::Exit);
                 }
-                self.request_piece().await?;
             }
             Message::UnChoke => {
                 info!("peer is unchoked: {}", self.ip);
@@ -299,17 +317,26 @@ impl Peer {
         }
     }
 
-    fn save_piece(&self, piece: &Piece) -> Result<()> {
+    fn save_pieces(&mut self) -> Result<()> {
         let dir_path = PathBuf::from(&*self.name);
-        let cache_path = dir_path.join(format!("{}-cache-{}", &self.name, piece.index));
         if !dir_path.is_dir() {
             create_dir_all(&dir_path)?;
         }
+        let cache_path = dir_path.join(format!(
+            "{}-cache-{}",
+            &self.name,
+            self.current_task.as_ref().unwrap().index
+        ));
         let mut cache_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(cache_path)?;
-        cache_file.write_all(&piece.piece)?;
+        let mut pieces = self.received_pieces.drain(0..).collect::<Vec<_>>();
+        pieces.sort_by_key(|piece| piece.begin);
+        pieces.into_iter().try_for_each(|piece| {
+            cache_file.write_all(&piece.piece)?;
+            anyhow::Ok(())
+        })?;
         Ok(())
     }
 }

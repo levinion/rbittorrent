@@ -23,6 +23,7 @@ impl Bitfield {
         self.0[byte_index as usize] |= 1 << (7 - offset);
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u32 {
         self.0.len() as u32
     }
