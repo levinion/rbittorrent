@@ -103,16 +103,18 @@ impl TorrentClient {
             .truncate(true)
             .write(true)
             .open(&*self.name)?;
+        let dir = PathBuf::from(format!("{}.cache", &self.name));
         (0..self.piece_num())
             .map(|index| format!("{}-cache-{}", &self.name, index))
             .map(PathBuf::from)
+            .map(|path| dir.join(path))
             .filter(|path| path.is_file())
             .flat_map(|path| std::fs::OpenOptions::new().read(true).open(path))
             .try_for_each(|mut cache| {
                 std::io::copy(&mut cache, &mut file)?;
                 Ok::<(), anyhow::Error>(())
             })?;
-        remove_dir_all(&*self.name)?;
+        remove_dir_all(dir)?;
         Ok(())
     }
 }
