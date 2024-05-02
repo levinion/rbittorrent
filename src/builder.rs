@@ -23,12 +23,24 @@ impl TorrentClientBuilder {
         Default::default()
     }
 
-    pub fn add_path<T>(mut self, path: T) -> Result<Self>
+    pub fn add_torrent_path<T>(self, path: T) -> Result<Self>
     where
         T: AsRef<Path>,
     {
         let bytes = std::fs::read(path.as_ref())?;
-        let torrent: BencodeTorrent = serde_bencode::from_bytes(&bytes)?;
+        self.add_torrent_bytes(&bytes)
+    }
+
+    pub async fn add_torrent_url(self, url: &str) -> Result<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .user_agent("rbittorrent/v0.1.3")
+            .build()?;
+        let bytes = client.get(url).send().await?.bytes().await?;
+        self.add_torrent_bytes(&bytes)
+    }
+
+    pub fn add_torrent_bytes(mut self, bytes: &[u8]) -> Result<Self> {
+        let torrent: BencodeTorrent = serde_bencode::from_bytes(bytes)?;
         let info_hash = torrent.info.hash();
         let piece_hashes = {
             torrent
